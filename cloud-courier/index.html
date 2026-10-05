@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Cloud Courier</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #87CEEB; touch-action: none; height: 100%; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script src="https://www.youtube.com/game_api/v1"></script>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let W, H;
+function resize() { W = canvas.width = innerWidth; H = canvas.height = innerHeight; }
+addEventListener('resize', resize); resize();
+
+// ---------- Levels ----------
+const LEVELS = [
+  { instr: "Drag to steer — land gently on the big mailbox.", length: 1400, wind: 0,
+    clouds: [], stars: [], mailboxY: 0.75, mailboxBig: true, par: 14 },
+  { instr: "Mind the breeze — grab the star on your way.", length: 1600, wind: 0.06,
+    clouds: [], stars: [[900, 0.35]], mailboxY: 0.7, par: 16 },
+  { instr: "Tap to flap over the clouds, then glide down.", length: 1600, wind: 0,
+    clouds: [[600, 0.55, 55], [800, 0.5, 60], [1050, 0.6, 50]], stars: [[800, 0.2]], mailboxY: 0.78, par: 17 },
+  { instr: "Short narrow turn — or the long path full of stars.", length: 1800, wind: 0,
+    clouds: [[800, 0.35, 50],[800, 0.75, 50],[1100, 0.4, 50],[1100, 0.8, 50],[1450, 0.3, 50]],
+    stars: [[950, 0.85],[1200, 0.88],[1450, 0.85]], mailboxY: 0.7, par: 20 },
+  { instr: "Wind, clouds, a moving mailbox — make the delivery!", length: 1800, wind: 0.05,
+    clouds: [[650, 0.5, 55],[1000, 0.65, 50],[1350, 0.4, 55]], stars: [[800, 0.25],[1200, 0.8]],
+    mailboxY: 0.7, moving: true, par: 20 },
+];
+
+// ---------- State ----------
+let state = 'title'; // title | intro | play | result | done
+let levelIdx = 0;
+let bird, cam, time, par, cloudHits, collected, missReason;
+let particles = [];
+let totalStars = 0;
+
+function startLevel(i) {
+  const L = LEVELS[i];
+  bird = { x: 80, y: H * 0.4, vy: 0, vx: 2.4, targetY: H * 0.4, invuln: 0, flap: 0 };
+  cam = 0; time = 0; cloudHits = 0; collected = 0; missReason = '';
+  particles = [];
+  LEVELS[i].stars.forEach(s => s.taken = false);
+  state = 'intro';
+}
+
+function mailboxPos(L) {
+  let y = H * L.mailboxY;
+  if (L.moving) y = H * 0.6 + Math.sin(time * 2) * H * 0.15;
+  return { x: L.length, y };
+}
+
+// ---------- Input ----------
+let pDown = null, dragging = false;
+canvas.addEventListener('pointerdown', e => {
+  pDown = { x: e.clientX, y: e.clientY, t: performance.now() };
+  dragging = true;
+  bird && (bird.targetY = e.clientY);
+  handleTap();
+});
+canvas.addEventListener('pointermove', e => {
+  if (dragging && bird) bird.targetY = e.clientY;
+});
+canvas.addEventListener('pointerup', e => {
+  if (pDown && performance.now() - pDown.t < 250 &&
+      Math.hypot(e.clientX - pDown.x, e.clientY - pDown.y) < 12) {
+    flap();
+  }
+  dragging = false; pDown = null;
+});
+addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') { flap(); e.preventDefault(); }
+  if (state === 'intro') state = 'play';
+  else if (state === 'result' && e.code === 'Space') next();
+});
+
+function handleTap() {
+  if (state === 'title') startLevel(0);
+  else if (state === 'intro') state = 'play';
+  else if (state === 'result') next();
+  else if (state === 'done') { levelIdx = 0; totalStars = 0; startLevel(0); }
+}
+
+function flap() { if (state === 'play' && bird) { bird.vy = -6.5; bird.flap = 8; } }
+
+function next() {
+  if (missReason) { startLevel(levelIdx); return; } // retry same level
+  levelIdx++;
+  if (levelIdx >= LEVELS.length) { state = 'done'; sendScore(); saveProgress(); }
+  else { startLevel(levelIdx); saveProgress(); }
+}
+
+// ---------- YouTube Playables SDK ----------
+let sdkPaused = false;
+try {
+  ytgame.game.firstFrameReady();
+  ytgame.system.onPause(() => { sdkPaused = true; try { ytgame.game.saveData(JSON.stringify({ levelIdx, totalStars })); } catch(e){} });
+  ytgame.system.onResume(() => { sdkPaused = false; });
+  ytgame.game.loadData().then(d => {
+    try { const s = JSON.parse(d); if (s && typeof s.levelIdx === 'number') { levelIdx = s.levelIdx; totalStars = s.totalStars || 0; } } catch(e){}
+  }).catch(() => {});
+} catch (e) { /* local play — SDK is a no-op */ }
+
+function gameReady() { try { ytgame.game.gameReady(); } catch(e){} }
+function saveProgress() { try { ytgame.game.saveData(JSON.stringify({ levelIdx, totalStars })); } catch(e){} }
+function sendScore() { try { ytgame.engagement.sendScore({ value: totalStars }); } catch(e){} }
+
+// ---------- Update ----------
+function update() {
+  if (state !== 'play' || sdkPaused) return;
+  const L = LEVELS[levelIdx];
+  time += 1 / 60;
+
+  // gravity + wind (wind pushes up/down gently where it blows)
+  bird.vy += 0.22;
+  bird.vy += Math.sin(time * 3 + bird.x * 0.01) * L.wind;
+  if (dragging) {
+    bird.y += (bird.targetY - bird.y) * 0.18;
+    bird.vy *= 0.5;
+  } else {
+    bird.y += bird.vy;
+  }
+  bird.vy = Math.max(-8, Math.min(8, bird.vy));
+  bird.x += bird.vx;
+  if (bird.y < 30) { bird.y = 30; bird.vy = 1; }
+  if (bird.y > H - 20) { bird.y = H - 20; bird.vy = -2; }
+  if (bird.flap > 0) bird.flap--;
+  if (bird.invuln > 0) bird.invuln--;
+  cam = bird.x - 140;
+
+  // clouds
+  for (const [cx, cy, r] of L.clouds) {
+    const sx = cx - cam, sy = cy * H;
+    if (bird.invuln === 0 && Math.hypot(bird.x - cx, bird.y - sy) < r * 0.75 + 12) {
+      cloudHits++; bird.invuln = 40; bird.vy = -5; bird.vx = 2.0;
+      for (let i = 0; i < 8; i++) particles.push({ x: bird.x, y: bird.y, vx: (Math.random()-0.5)*4, vy: (Math.random()-0.5)*4, life: 30 });
+      setTimeout(() => bird.vx = 2.4, 400);
+    }
+  }
+
+  // stars
+  for (const s of L.stars) {
+    if (!s.taken && Math.hypot(bird.x - s[0], bird.y - s[1] * H) < 24) {
+      s.taken = true; collected++;
+      for (let i = 0; i < 8; i++) particles.push({ x: s[0], y: s[1]*H, vx: (Math.random()-0.5)*4, vy: (Math.random()-0.5)*4, life: 25 });
+    }
+  }
+
+  // landing
+  const m = mailboxPos(L);
+  const zone = L.mailboxBig ? 60 : 42;
+  if (Math.abs(bird.x - m.x) < zone && Math.abs(bird.y - (m.y - 30)) < 34) {
+    if (bird.vy < 3.5) {
+      // success
+      let stars = 1; // delivered
+      if (cloudHits === 0) stars++;
+      else if (collected > 0) stars++;
+      if (collected >= 1 && cloudHits === 0 && stars < 3) stars++;
+      if (time <= L.par && stars < 3) stars = Math.min(3, stars + 1);
+      if (collected > 0 && cloudHits === 0 && time <= L.par) stars = 3;
+      totalStars += stars;
+      state = 'result';
+      missReason = '';
+      window.earned = stars;
+    }
+  }
+  if (bird.x > m.x + 80 && state === 'play') {
+    state = 'result'; missReason = 'Missed the landing!';
+  }
+
+  for (const p of particles) { p.x += p.vx; p.y += p.vy; p.life--; }
+  particles = particles.filter(p => p.life > 0);
+}
+
+// ---------- Draw ----------
+function drawCloud(x, y, r) {
+  ctx.fillStyle = 'rgba(255,255,255,0.95)';
+  ctx.beginPath();
+  ctx.arc(x, y, r * 0.6, 0, 7);
+  ctx.arc(x + r * 0.5, y + 6, r * 0.45, 0, 7);
+  ctx.arc(x - r * 0.5, y + 6, r * 0.45, 0, 7);
+  ctx.fill();
+}
+
+function drawBird(x, y) {
+  ctx.save();
+  ctx.translate(x - cam, y);
+  const flap = bird.flap > 0 ? -0.5 : Math.sin(time * 6) * 0.2;
+  // wings
+  ctx.fillStyle = '#f39c12';
+  ctx.beginPath(); ctx.ellipse(-4, -6, 14, 5, flap, 0, 7); ctx.fill();
+  // body
+  ctx.fillStyle = '#e67e22';
+  ctx.beginPath(); ctx.ellipse(0, 0, 14, 9, 0, 0, 7); ctx.fill();
+  // head + beak
+  ctx.fillStyle = '#e67e22'; ctx.beginPath(); ctx.arc(12, -4, 6, 0, 7); ctx.fill();
+  ctx.fillStyle = '#e74c3c'; ctx.beginPath(); ctx.moveTo(17,-5); ctx.lineTo(24,-3); ctx.lineTo(17,-1); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(13,-5,1.8,0,7); ctx.fill();
+  ctx.fillStyle = '#333'; ctx.beginPath(); ctx.arc(13.6,-5,0.9,0,7); ctx.fill();
+  // parcel
+  ctx.fillStyle = '#8e6b3a'; ctx.fillRect(-6, 8, 14, 10);
+  ctx.strokeStyle = '#c0392b'; ctx.strokeRect(-6, 8, 14, 10);
+  ctx.strokeStyle = '#c0392b'; ctx.beginPath(); ctx.moveTo(1,8); ctx.lineTo(1,18); ctx.stroke();
+  ctx.restore();
+}
+
+function drawMailbox(x, y, big) {
+  const s = big ? 1.5 : 1;
+  ctx.save(); ctx.translate(x - cam, y); ctx.scale(s, s);
+  ctx.fillStyle = '#7f8c8d'; ctx.fillRect(-4, 0, 8, 26);
+  ctx.fillStyle = '#e74c3c';
+  ctx.beginPath(); ctx.arc(0, 0, 16, Math.PI, 0); ctx.rect(-16, 0, 32, 14); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('MAIL', 0, 11);
+  ctx.restore();
+}
+
+function drawStar(x, y, taken) {
+  if (taken) return;
+  ctx.save(); ctx.translate(x - cam, y); ctx.fillStyle = '#f1c40f';
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 ? 5 : 12, a = -Math.PI/2 + i * Math.PI/5;
+    ctx[i ? 'lineTo' : 'moveTo'](Math.cos(a)*r, Math.sin(a)*r);
+  }
+  ctx.closePath(); ctx.fill(); ctx.restore();
+}
+
+function draw() {
+  const L = LEVELS[levelIdx] || LEVELS[0];
+  // sky
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#5dade2'); g.addColorStop(1, '#aed6f1');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // parallax clouds backdrop
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  for (let i = 0; i < 6; i++) {
+    const x = ((i * 350 - cam * 0.3) % (W + 300) + W + 300) % (W + 300) - 150;
+    drawCloud(x, H * (0.1 + (i % 3) * 0.12), 40);
+  }
+
+  if (state === 'title') {
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
+    ctx.font = 'bold 44px sans-serif'; ctx.fillText('☁️ Cloud Courier 📦', W/2, H/2 - 40);
+    ctx.font = '20px sans-serif'; ctx.fillText('Tap to start delivering', W/2, H/2 + 10);
+    return;
+  }
+
+  // wind streaks
+  if (L.wind) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 2;
+    for (let i = 0; i < 8; i++) {
+      const x = ((i * 220 + time * 300) % (W + 100) + W + 100) % (W + 100) - 50;
+      const y = H * 0.2 + (i % 5) * H * 0.15;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - 30, y + (L.wind > 0 ? -6 : 6)); ctx.stroke();
+    }
+  }
+
+  // stars & clouds & mailbox
+  for (const s of L.stars) drawStar(s[0], s[1] * H, s.taken);
+  for (const [cx, cy, r] of L.clouds) drawCloud(cx - cam, cy * H, r);
+  const m = mailboxPos(L);
+  drawMailbox(m.x, m.y - 30, L.mailboxBig);
+
+  // landing zone pulse
+  ctx.strokeStyle = 'rgba(46,204,113,0.8)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(m.x - cam, m.y - 30, 30 + Math.sin(time*4)*4, 0, 7); ctx.stroke();
+
+  drawBird(bird.x, bird.y);
+  for (const p of particles) { ctx.fillStyle = `rgba(255,255,255,${p.life/30})`; ctx.fillRect(p.x - cam, p.y, 4, 4); }
+
+  // arrow to destination
+  const ang = Math.atan2((m.y - 30) - bird.y, m.x - bird.x);
+  ctx.save(); ctx.translate(70, bird.y); ctx.rotate(Math.max(-1.2, Math.min(1.2, ang)));
+  ctx.fillStyle = '#2c3e50';
+  ctx.beginPath(); ctx.moveTo(14, 0); ctx.lineTo(-8, -8); ctx.lineTo(-8, 8); ctx.fill();
+  ctx.restore();
+
+  // HUD
+  ctx.fillStyle = '#2c3e50'; ctx.font = '16px sans-serif'; ctx.textAlign = 'left';
+  ctx.fillText(`Level ${levelIdx + 1}/5   ⭐ ${collected}   ☁️ hits: ${cloudHits}   ⏱ ${time.toFixed(1)}s`, 12, 26);
+
+  if (state === 'intro') {
+    ctx.fillStyle = 'rgba(0,0,0,0.45)'; ctx.fillRect(0, H/2 - 50, W, 80);
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.font = '18px sans-serif';
+    ctx.fillText(`Level ${levelIdx + 1}: ${L.instr}`, W/2, H/2 - 8);
+    ctx.font = '14px sans-serif'; ctx.fillText('Tap to begin', W/2, H/2 + 18);
+  }
+  if (state === 'result') {
+    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
+    if (missReason) {
+      ctx.font = 'bold 28px sans-serif'; ctx.fillText(missReason, W/2, H/2 - 30);
+      ctx.font = '18px sans-serif'; ctx.fillText('Tap to retry', W/2, H/2 + 10);
+    } else {
+      ctx.font = 'bold 28px sans-serif'; ctx.fillText('Delivered! 🎉', W/2, H/2 - 40);
+      ctx.font = '36px sans-serif';
+      ctx.fillText('⭐'.repeat(window.earned) + '☆'.repeat(3 - window.earned), W/2, H/2);
+      ctx.font = '16px sans-serif';
+      ctx.fillText(`Time ${time.toFixed(1)}s  |  Cloud hits ${cloudHits}  |  Stars ${collected}`, W/2, H/2 + 30);
+      ctx.fillText(levelIdx + 1 < LEVELS.length ? 'Tap for next level' : 'Tap to finish', W/2, H/2 + 60);
+    }
+  }
+  if (state === 'done') {
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
+    ctx.font = 'bold 34px sans-serif'; ctx.fillText('All deliveries complete! 🏅', W/2, H/2 - 20);
+    ctx.font = '20px sans-serif'; ctx.fillText(`Total stars: ${totalStars} / 15`, W/2, H/2 + 15);
+    ctx.fillText('Tap to play again', W/2, H/2 + 50);
+  }
+}
+
+let last = 0;
+function loop(t) {
+  update(); draw();
+  requestAnimationFrame(loop);
+}
+startLevel(0); state = 'title';
+gameReady();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
