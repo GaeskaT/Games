@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Moses: The Exodus — Full Story</title>
+<style>
+  html,body{margin:0;overflow:hidden;background:#000;font-family:Georgia,serif}
+  #ui{position:fixed;inset:0;pointer-events:none;color:#fff}
+  #chapter{position:absolute;top:8%;width:100%;text-align:center;font-size:28px;text-shadow:2px 2px 4px #000;transition:opacity 1s}
+  #hud{position:absolute;top:10px;width:100%;text-align:center;font-size:20px;text-shadow:1px 1px 3px #000}
+  #msg{position:absolute;top:55%;width:100%;text-align:center;font-size:24px;text-shadow:2px 2px 4px #000}
+  .overlay{position:absolute;inset:0;background:rgba(0,0,0,.75);display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:all;text-align:center;color:#fff;padding:0 30px}
+  .overlay h1{font-size:42px;margin-bottom:10px}
+  .overlay h2{font-size:24px;margin:0 0 14px;color:#ffd700}
+  .overlay p{font-size:19px;max-width:640px;line-height:1.5}
+  .overlay button{font-size:18px;padding:10px 26px;cursor:pointer;margin-top:16px}
+</style>
+</head>
+<body>
+<div id="ui">
+  <div id="chapter"></div>
+  <div id="hud"></div>
+  <div id="msg"></div>
+</div>
+<div id="screen" class="overlay">
+  <h1>MOSES: THE EXODUS</h1>
+  <h2>The Full Story</h2>
+  <p>From a whispering burning bush to a parted sea and a mountain of fire — relive the story of Moses.<br><br>Move: ← → / A D / drag &nbsp;•&nbsp; Jump: Space / tap</p>
+  <button id="startBtn">Begin the Journey</button>
+</div>
+<script type="importmap">
+{ "imports": { "three": "./three.module.js" } }
+</script>
+<script src="https://www.youtube.com/game_api/v1"></script>
+<script type="module">
+import * as THREE from 'three';
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x87ceeb, 30, 90);
+const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 200);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+const sun = new THREE.DirectionalLight(0xffeedd, 1.2); sun.position.set(5,10,3); scene.add(sun);
+
+const lanes = [-3, 0, 3];
+let targetLane = 1, vy = 0, jumping = false;
+let distance = 0, hearts = 3, score = 0, invuln = 0, running = false, phase = -1, frame = 0;
+const obstacles = [], pickups = [], setPieces = [];
+let player, waterL, waterR;
+
+const groundMat = new THREE.MeshLambertMaterial({color:0xd2b48c});
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 400), groundMat);
+ground.rotation.x = -Math.PI/2; ground.position.z = -150; scene.add(ground);
+
+function makePlayer(){
+  const g = new THREE.Group();
+  const robe = new THREE.Mesh(new THREE.ConeGeometry(0.7,2,12), new THREE.MeshLambertMaterial({color:0x8b4513}));
+  robe.position.y = 1; g.add(robe);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.4,12,12), new THREE.MeshLambertMaterial({color:0xd9a06b}));
+  head.position.y = 2.2; g.add(head);
+  const staff = new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.06,2.4), new THREE.MeshLambertMaterial({color:0x5b3a1e}));
+  staff.position.set(0.8,1.4,0); g.add(staff);
+  scene.add(g); return g;
+}
+player = makePlayer();
+
+// Phase definitions: full Moses story
+const PHASES = [
+  { name:"The Burning Bush", bg:0x2c1a0e, fog:0x2c1a0e, ground:0x5d4037, dur:350,
+    msg:"“I have surely seen the affliction of my people… Come, I will send you to Pharaoh.” — Exodus 3",
+    cut:{h:"Chapter 1 — The Burning Bush", p:"While tending sheep in Midian, Moses saw a bush aflame yet not consumed. God called to him from the fire and gave him a mission: free His people from slavery in Egypt."},
+    obs:'branch' },
+  { name:"The Plagues of Egypt", bg:0x6e2c00, fog:0x6e2c00, ground:0x4e342e, dur:700,
+    msg:"Hail and locusts fall! Run, Moses!",
+    cut:{h:"Chapter 2 — The Plagues", p:"Pharaoh refused to let the people go. So came the ten plagues — water turned to blood, frogs, gnats, flies, boils, hail, locusts, darkness. Still he hardened his heart."},
+    obs:'locust' },
+  { name:"The Passover Night", bg:0x1a1a2e, fog:0x1a1a2e, ground:0x333333, dur:700,
+    msg:"Gather the people — the LORD passes over.",
+    cut:{h:"Chapter 3 — Passover", p:"That night the LORD passed through Egypt. The firstborn fell in every house without the blood of the lamb on the doorposts. Pharaoh relented: “Go!” The Exodus began."},
+    obs:'dark' },
+  { name:"Pharaoh's Chariots", bg:0xd2691e, fog:0xd2691e, ground:0xc2a077, dur:800,
+    msg:"Pharaoh changed his mind — chariots pursue!",
+    cut:{h:"Chapter 4 — The Chase", p:"Pharaoh regretted letting Israel go and pursued them with 600 chariots. The people cried out in fear… but Moses said, “The LORD will fight for you.”"},
+    obs:'chariot' },
+  { name:"The Red Sea Parts", bg:0x154360, fog:0x154360, ground:0xe8e0c8, dur:800,
+    msg:"Raise your staff — the sea splits!",
+    cut:{h:"Chapter 5 — The Red Sea", p:"Cornered between the army and the sea, Moses stretched out his hand. A great wind drove the waters back, and a wall of water rose on both sides. The people crossed on dry land."},
+    obs:'wave', sea:true },
+  { name:"Forty Years in the Wilderness", bg:0xe1c699, fog:0xe1c699, ground:0xd2b48c, dur:800,
+    msg:"Manna from heaven — gather and endure.",
+    cut:{h:"Chapter 6 — The Wilderness", p:"For forty years Israel wandered the wilderness. Each morning, bread from heaven — manna — covered the ground. Quail flew in at evening. The people learned to trust daily."},
+    obs:'cactus' },
+  { name:"Mount Sinai", bg:0xfdf2b8, fog:0xfdf2b8, ground:0xcfbabb, dur:800,
+    msg:"Climb Sinai — the Law awaits.",
+    cut:{h:"Chapter 7 — The Ten Commandments", p:"In the third month they came to Sinai. Thunder and lightning covered the mountain. Moses went up, and God gave him the Law — the covenant engraved on stone."},
+    obs:'column' },
+];
+
+let sdkPaused = false;
+try {
+  ytgame.game.firstFrameReady();
+  ytgame.system.onPause(() => { sdkPaused = true; try { ytgame.game.saveData(JSON.stringify({phase, score})); } catch(e){} });
+  ytgame.system.onResume(() => { sdkPaused = false; });
+  ytgame.game.loadData().then(d => { try { const s = JSON.parse(d); if (s && typeof s.phase === 'number' && s.phase >= 0) { phase = s.phase; score = s.score || 0; } } catch(e){} }).catch(()=>{});
+} catch(e){}
+function gameReady(){ try { ytgame.game.gameReady(); } catch(e){} }
+function saveProgress(){ try { ytgame.game.saveData(JSON.stringify({phase, score})); } catch(e){} }
+function sendScore(){ try { ytgame.engagement.sendScore({ value: score }); } catch(e){} }
+
+function setPhase(i){
+  phase = i; distance = 0; frame = 0;
+  const c = PHASES[i];
+  scene.background = new THREE.Color(c.bg); scene.fog.color.set(c.fog);
+  groundMat.color.set(c.ground);
+  // clear set pieces
+  setPieces.forEach(m=>scene.remove(m)); setPieces.length = 0;
+
+  const el = document.getElementById('chapter');
+  el.textContent = c.name; el.style.opacity = 1;
+  const msg = document.getElementById('msg'); msg.textContent = c.msg;
+  setTimeout(()=>{el.style.opacity=0; msg.textContent='';}, 3500);
+
+  // Red Sea: two parting water walls
+  if(c.sea){
+    const mat = new THREE.MeshLambertMaterial({color:0x1565c0, transparent:true, opacity:0.9});
+    waterL = new THREE.Mesh(new THREE.BoxGeometry(1,18,300), mat);
+    waterR = new THREE.Mesh(new THREE.BoxGeometry(1,18,300), mat.clone());
+    waterL.position.set(-2,9,-120); waterR.position.set(2,9,-120);
+    scene.add(waterL, waterR); setPieces.push(waterL, waterR);
+  }
+  // Burning bush visual
+  if(i===0){
+    const bush = new THREE.Mesh(new THREE.ConeGeometry(1.5,3,8), new THREE.MeshLambertMaterial({color:0x1b5e20, emissive:0xff6600, emissiveIntensity:0.6}));
+    bush.position.set(0, 1.5, -20); scene.add(bush); setPieces.push(bush);
+  }
+}
+
+function showCutscene(i, then){
+  running = false;
+  const s = document.getElementById('screen');
+  s.style.display = 'flex';
+  s.innerHTML = `<h2>${PHASES[i].cut.h}</h2><p>${PHASES[i].cut.p}</p><button id="contBtn">${i===0?'Begin':'Continue'}</button>`;
+  document.getElementById('contBtn').onclick = ()=>{ s.style.display='none'; then(); };
+}
+
+function spawnObstacle(){
+  const l = Math.floor(Math.random()*3);
+  const t = PHASES[phase].obs;
+  let m;
+  if(t==='locust') m = new THREE.Mesh(new THREE.SphereGeometry(0.9,8,8), new THREE.MeshLambertMaterial({color:0x7cb342}));
+  else if(t==='dark') m = new THREE.Mesh(new THREE.BoxGeometry(2,2.4,2), new THREE.MeshLambertMaterial({color:0x4a148c}));
+  else if(t==='chariot') m = new THREE.Mesh(new THREE.BoxGeometry(2.4,1.4,2), new THREE.MeshLambertMaterial({color:0xa0522d}));
+  else if(t==='wave') m = new THREE.Mesh(new THREE.ConeGeometry(1,2.4,8), new THREE.MeshLambertMaterial({color:0x1976d2}));
+  else if(t==='cactus') m = new THREE.Mesh(new THREE.CylinderGeometry(0.7,0.9,2.4,8), new THREE.MeshLambertMaterial({color:0x2e7d32}));
+  else if(t==='column') m = new THREE.Mesh(new THREE.BoxGeometry(2,2.8,2), new THREE.MeshLambertMaterial({color:0xffd700}));
+  else m = new THREE.Mesh(new THREE.ConeGeometry(1,2,6), new THREE.MeshLambertMaterial({color:0x6d4c41}));
+  m.position.set(lanes[l], (m.geometry.parameters?.height||1.5)/2, camera.position.z-90);
+  scene.add(m); obstacles.push(m);
+}
+function spawnPickup(){
+  const l = Math.floor(Math.random()*3);
+  const m = new THREE.Mesh(new THREE.OctahedronGeometry(0.5),
+    new THREE.MeshLambertMaterial({color: phase===6?0xffe082:0x80cbc4, emissive:0x335544}));
+  m.position.set(lanes[l], 1.2, camera.position.z-90);
+  scene.add(m); pickups.push(m);
+}
+
+function update(){
+  if(!running || sdkPaused) return;
+  frame++; distance++; score++;
+  if(invuln>0) invuln--;
+
+  if(distance > PHASES[phase].dur){
+    if(phase < PHASES.length-1){ const n = phase+1; saveProgress(); showCutscene(n, ()=>{ setPhase(n); running = true; }); }
+    else return win();
+  }
+
+  player.position.x += (lanes[targetLane]-player.position.x)*0.2;
+  if(jumping){ vy -= 0.02; player.position.y += vy; if(player.position.y<=0){player.position.y=0; jumping=false;} }
+  camera.position.set(player.position.x*0.5, 4.5, 7);
+  camera.lookAt(player.position.x, 1.5, -10);
+
+  if(frame%60===0) spawnObstacle();
+  if(frame%90===0) spawnPickup();
+
+  for(let i=obstacles.length-1;i>=0;i--){
+    const o=obstacles[i]; o.position.z += (0.28+phase*0.03); o.rotation.y += 0.02;
+    if(o.position.z>10){scene.remove(o); obstacles.splice(i,1); continue;}
+    if(invuln===0 && Math.abs(o.position.z)<1.2 && Math.abs(o.position.x-player.position.x)<1.3 && player.position.y<2){
+      hearts--; invuln=90;
+      const msg=document.getElementById('msg'); msg.textContent = hearts>0?"Ouch! Press on!":"";
+      setTimeout(()=>msg.textContent='',1200);
+      if(hearts<=0) return gameOver();
+    }
+  }
+  for(let i=pickups.length-1;i>=0;i--){
+    const p=pickups[i]; p.position.z += (0.28+phase*0.03); p.rotation.y += 0.08; p.position.y = 1.2+Math.sin(frame*0.1)*0.3;
+    if(p.position.z>10){scene.remove(p); pickups.splice(i,1); continue;}
+    if(Math.abs(p.position.z)<1.2 && Math.abs(p.position.x-player.position.x)<1.2 && Math.abs(p.position.y-(player.position.y+1.2))<1.4){
+      score += 50; scene.remove(p); pickups.splice(i,1);
+    }
+  }
+  // part the water walls
+  if(waterL && waterR){
+    waterL.position.x = Math.max(-14, waterL.position.x - 0.06);
+    waterR.position.x = Math.min(14, waterR.position.x + 0.06);
+  }
+  document.getElementById('hud').textContent = `❤️ ${hearts}   ✨ ${score}   📖 ${PHASES[phase].name}`;
+}
+
+function gameOver(){
+  running=false;
+  const msg=document.getElementById('msg');
+  msg.innerHTML=`The journey ended early in ${PHASES[phase].name}. Score: ${score}<br><button onclick="location.reload()" style="pointer-events:all;font-size:18px;padding:8px 20px">Try Again</button>`;
+}
+function win(){
+  running=false;
+  scene.background=new THREE.Color(0xfff7cc);
+  const ok=document.getElementById('screen');
+  ok.style.display='flex';
+  ok.innerHTML=`<h1>🏔️ Mount Sinai</h1><p>Moses came down bearing the two tablets of the covenant — the Law written by the finger of God.<br><br>"So Moses did as the LORD commanded him." — Exodus 40:16<br><br>Final Score: ${score}</p><button onclick="location.reload()">Play Again</button>`;
+  sendScore();
+}
+
+addEventListener('keydown', e=>{
+  if(e.code==='ArrowLeft'||e.code==='KeyA') targetLane=Math.max(0,targetLane-1);
+  if(e.code==='ArrowRight'||e.code==='KeyD') targetLane=Math.min(2,targetLane+1);
+  if((e.code==='Space'||e.code==='ArrowUp') && !jumping){jumping=true; vy=0.32;}
+});
+let sx=0;
+addEventListener('pointerdown', e=>{sx=e.clientX; if(!jumping){jumping=true; vy=0.32;}});
+addEventListener('pointermove', e=>{
+  if(e.buttons){ const dx=e.clientX-sx; if(Math.abs(dx)>40){targetLane=Math.max(0,Math.min(2,targetLane+(dx>0?1:-1))); sx=e.clientX;} }
+});
+
+document.getElementById('startBtn').onclick = ()=>{
+  gameReady();
+  showCutscene(0, ()=>{ setPhase(0); running = true; });
+};
+function loop(){ update(); renderer.render(scene,camera); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>
